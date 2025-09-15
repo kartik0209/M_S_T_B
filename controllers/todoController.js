@@ -510,6 +510,7 @@ exports.deleteTodo = async (req, res) => {
 
 // Admin: Assign task to user
 exports.assignTodoToUser = async (req, res) => {
+  console.log('Assigning todo to user:', req.body);
   try {
     if (req.user.role !== 'admin') {
       return res.status(403).json({

@@ -918,4 +918,31 @@ exports.getUsersForAssignment = async (req, res) => {
     });
   }
 };
+
+exports.getUsersForAssignment = async (req, res) => {
+  try {
+    const users = await User.find({
+      isActive: true,
+      role: { $ne: 'admin' } // Exclude admin users
+    })
+    .select('username email profileImage role createdAt')
+    .sort({ username: 1 });
+
+    res.json({
+      success: true,
+      data: {
+        users: users,
+        count: users.length
+      }
+    });
+
+  } catch (error) {
+    console.error('Error fetching users for assignment:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch users',
+      error: error.message
+    });
+  }
+};
           
