@@ -10,7 +10,7 @@ router.use(authenticateToken);
 
 // User profile routes
 router.put('/profile', updateProfile);
-router.post('/profile/image', upload.single('profileImage'), uploadProfileImage);
+router.post('/profile/image', upload.single('image'), uploadProfileImage);
 router.get('/stats', getUserStats);
 
 module.exports = router;

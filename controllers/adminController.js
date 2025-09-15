@@ -1,11 +1,12 @@
 const User = require('../models/User');
 const Todo = require('../models/Todo');
 
-// Admin Dashboard
+// Admin Dashboard with Enhanced Analytics
 exports.getDashboard = async (req, res) => {
   try {
     const now = new Date();
     const sevenDaysAgo = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
+    const fourteenDaysAgo = new Date(now.getTime() - (14 * 24 * 60 * 60 * 1000));
     const thirtyDaysAgo = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
 
     // Basic counts
@@ -17,7 +18,7 @@ exports.getDashboard = async (req, res) => {
       status: { $ne: 'completed' }
     });
 
-    // Recent activity
+    // Recent activity (last 7 days)
     const recentUsers = await User.countDocuments({
       createdAt: { $gte: sevenDaysAgo }
     });
@@ -25,7 +26,34 @@ exports.getDashboard = async (req, res) => {
       createdAt: { $gte: sevenDaysAgo }
     });
 
-    // Todo status distribution
+    // Previous week activity (for comparison)
+    const previousWeekTodos = await Todo.countDocuments({
+      createdAt: { $gte: fourteenDaysAgo, $lt: sevenDaysAgo }
+    });
+
+    // Average tasks per user (last 7 days)
+    const avgTasksPerUser = await Todo.aggregate([
+      {
+        $match: {
+          createdAt: { $gte: sevenDaysAgo }
+        }
+      },
+      {
+        $group: {
+          _id: '$userId',
+          taskCount: { $sum: 1 }
+        }
+      },
+      {
+        $group: {
+          _id: null,
+          avgTasks: { $avg: '$taskCount' },
+          totalUsers: { $sum: 1 }
+        }
+      }
+    ]);
+
+    // Todo status distribution (for pie chart)
     const statusStats = await Todo.aggregate([
       {
         $group: {
@@ -56,7 +84,7 @@ exports.getDashboard = async (req, res) => {
       }
     ]);
 
-    // Daily activity for last 30 days
+    // Daily activity for last 30 days (for line/bar chart)
     const dailyActivity = await Todo.aggregate([
       {
         $match: {
@@ -79,7 +107,16 @@ exports.getDashboard = async (req, res) => {
       { $sort: { '_id.date': 1 } }
     ]);
 
-    // Most active users
+    // Weekly comparison data
+    const weeklyComparison = {
+      currentWeek: recentTodos,
+      previousWeek: previousWeekTodos,
+      growth: previousWeekTodos > 0 
+        ? Math.round(((recentTodos - previousWeekTodos) / previousWeekTodos) * 100)
+        : recentTodos > 0 ? 100 : 0
+    };
+
+    // Most active users (with task completion rates)
     const activeUsers = await Todo.aggregate([
       {
         $group: {
@@ -100,6 +137,11 @@ exports.getDashboard = async (req, res) => {
       },
       { $unwind: '$user' },
       {
+        $match: {
+          'user.isActive': true
+        }
+      },
+      {
         $project: {
           username: '$user.username',
           email: '$user.email',
@@ -118,6 +160,47 @@ exports.getDashboard = async (req, res) => {
       { $limit: 10 }
     ]);
 
+    // Task assignment statistics (tasks assigned by admins)
+    const assignmentStats = await Todo.aggregate([
+      {
+        $match: {
+          assignedBy: { $ne: null }
+        }
+      },
+      {
+        $group: {
+          _id: '$assignedBy',
+          assignedCount: { $sum: 1 },
+          completedAssignments: {
+            $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] }
+          }
+        }
+      },
+      {
+        $lookup: {
+          from: 'users',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'admin'
+        }
+      },
+      { $unwind: '$admin' },
+      {
+        $project: {
+          adminName: '$admin.username',
+          assignedCount: 1,
+          completedAssignments: 1,
+          assignmentCompletionRate: {
+            $round: [
+              { $multiply: [{ $divide: ['$completedAssignments', '$assignedCount'] }, 100] },
+              2
+            ]
+          }
+        }
+      },
+      { $sort: { assignedCount: -1 } }
+    ]);
+
     res.json({
       success: true,
       data: {
@@ -128,14 +211,20 @@ exports.getDashboard = async (req, res) => {
           overdueTodos,
           recentUsers,
           recentTodos,
-          completionRate: totalTodos > 0 ? Math.round((completedTodos / totalTodos) * 100) : 0
+          completionRate: totalTodos > 0 ? Math.round((completedTodos / totalTodos) * 100) : 0,
+          avgTasksPerUser: avgTasksPerUser[0] ? Math.round(avgTasksPerUser[0].avgTasks * 100) / 100 : 0
         },
         charts: {
           statusStats,
           categoryStats,
           priorityStats,
           dailyActivity,
-          activeUsers
+          activeUsers,
+          assignmentStats
+        },
+        trends: {
+          weeklyComparison,
+          growthRate: weeklyComparison.growth
         }
       }
     });
@@ -149,7 +238,7 @@ exports.getDashboard = async (req, res) => {
   }
 };
 
-// Get all users
+// Get all users with enhanced filtering
 exports.getUsers = async (req, res) => {
   try {
     const { page = 1, limit = 20, search, role, isActive } = req.query;
@@ -187,6 +276,9 @@ exports.getUsers = async (req, res) => {
               pending: {
                 $sum: { $cond: [{ $eq: ['$status', 'pending'] }, 1, 0] }
               },
+              inProgress: {
+                $sum: { $cond: [{ $eq: ['$status', 'in-progress'] }, 1, 0] }
+              },
               overdue: {
                 $sum: {
                   $cond: [
@@ -200,6 +292,9 @@ exports.getUsers = async (req, res) => {
                     0
                   ]
                 }
+              },
+              assigned: {
+                $sum: { $cond: [{ $ne: ['$assignedBy', null] }, 1, 0] }
               }
             }
           }
@@ -207,7 +302,14 @@ exports.getUsers = async (req, res) => {
 
         return {
           ...user.toObject(),
-          stats: todoStats[0] || { total: 0, completed: 0, pending: 0, overdue: 0 }
+          stats: todoStats[0] || { 
+            total: 0, 
+            completed: 0, 
+            pending: 0, 
+            inProgress: 0, 
+            overdue: 0, 
+            assigned: 0 
+          }
         };
       })
     );
@@ -255,6 +357,7 @@ exports.getUserDetails = async (req, res) => {
 
     // Get user's todos
     const todos = await Todo.find({ userId })
+      .populate('assignedBy', 'username email')
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit));
@@ -290,6 +393,9 @@ exports.getUserDetails = async (req, res) => {
                 0
               ]
             }
+          },
+          assigned: {
+            $sum: { $cond: [{ $ne: ['$assignedBy', null] }, 1, 0] }
           }
         }
       }
@@ -323,14 +429,49 @@ exports.getUserDetails = async (req, res) => {
       }
     ]);
 
+    // Recent activity (last 30 days)
+    const thirtyDaysAgo = new Date();
+    thirtyDaysAgo.setDate(thirtyDaysAgo.getDate() - 30);
+    
+    const recentActivity = await Todo.aggregate([
+      { 
+        $match: { 
+          userId: user._id,
+          createdAt: { $gte: thirtyDaysAgo }
+        } 
+      },
+      {
+        $group: {
+          _id: {
+            date: {
+              $dateToString: {
+                format: '%Y-%m-%d',
+                date: '$createdAt'
+              }
+            }
+          },
+          count: { $sum: 1 }
+        }
+      },
+      { $sort: { '_id.date': 1 } }
+    ]);
+
     res.json({
       success: true,
       data: {
         user,
         todos,
-        stats: stats[0] || { total: 0, completed: 0, pending: 0, inProgress: 0, overdue: 0 },
+        stats: stats[0] || { 
+          total: 0, 
+          completed: 0, 
+          pending: 0, 
+          inProgress: 0, 
+          overdue: 0,
+          assigned: 0 
+        },
         categoryBreakdown,
         priorityBreakdown,
+        recentActivity,
         pagination: {
           currentPage: parseInt(page),
           totalPages: Math.ceil(totalTodos / parseInt(limit)),
@@ -396,16 +537,30 @@ exports.updateUser = async (req, res) => {
   }
 };
 
-// Get all todos (admin view)
+// Get all todos (admin view) with enhanced filtering
 exports.getAllTodos = async (req, res) => {
   try {
-    const { page = 1, limit = 20, status, category, priority, userId, search } = req.query;
+    const { 
+      page = 1, 
+      limit = 20, 
+      status, 
+      category, 
+      priority, 
+      userId, 
+      search,
+      assignedBy,
+      isAssigned
+    } = req.query;
 
     let query = {};
     if (status) query.status = status;
     if (category) query.category = category;
     if (priority) query.priority = priority;
     if (userId) query.userId = userId;
+    if (assignedBy) query.assignedBy = assignedBy;
+    if (isAssigned !== undefined) {
+      query.assignedBy = isAssigned === 'true' ? { $ne: null } : null;
+    }
     if (search) {
       query.$or = [
         { title: { $regex: search, $options: 'i' } },
@@ -419,14 +574,50 @@ exports.getAllTodos = async (req, res) => {
       .sort({ createdAt: -1 })
       .skip(skip)
       .limit(parseInt(limit))
-      .populate('userId', 'username email profileImage');
+      .populate('userId', 'username email profileImage')
+      .populate('assignedBy', 'username email');
 
     const total = await Todo.countDocuments(query);
+
+    // Get summary stats for current filter
+    const filterStats = await Todo.aggregate([
+      { $match: query },
+      {
+        $group: {
+          _id: null,
+          total: { $sum: 1 },
+          completed: {
+            $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] }
+          },
+          pending: {
+            $sum: { $cond: [{ $eq: ['$status', 'pending'] }, 1, 0] }
+          },
+          inProgress: {
+            $sum: { $cond: [{ $eq: ['$status', 'in-progress'] }, 1, 0] }
+          },
+          overdue: {
+            $sum: {
+              $cond: [
+                {
+                  $and: [
+                    { $lt: ['$dueDate', new Date()] },
+                    { $ne: ['$status', 'completed'] }
+                  ]
+                },
+                1,
+                0
+              ]
+            }
+          }
+        }
+      }
+    ]);
 
     res.json({
       success: true,
       data: {
         todos,
+        stats: filterStats[0] || { total: 0, completed: 0, pending: 0, inProgress: 0, overdue: 0 },
         pagination: {
           currentPage: parseInt(page),
           totalPages: Math.ceil(total / parseInt(limit)),
@@ -446,14 +637,15 @@ exports.getAllTodos = async (req, res) => {
   }
 };
 
-// Generate reports
+// Generate comprehensive reports
 exports.getReports = async (req, res) => {
   try {
     const now = new Date();
     const thirtyDaysAgo = new Date(now.getTime() - (30 * 24 * 60 * 60 * 1000));
     const sevenDaysAgo = new Date(now.getTime() - (7 * 24 * 60 * 60 * 1000));
+    const fourteenDaysAgo = new Date(now.getTime() - (14 * 24 * 60 * 60 * 1000));
 
-    // User activity report
+    // User activity report with enhanced metrics
     const userActivityReport = await User.aggregate([
       {
         $lookup: {
@@ -475,7 +667,28 @@ exports.getReports = async (req, res) => {
             $size: {
               $filter: {
                 input: '$todos',
-                cond: { $eq: ['$$this.status', 'completed'] }
+                cond: { $eq: ['$this.status', 'completed'] }
+              }
+            }
+          },
+          overdueTodos: {
+            $size: {
+              $filter: {
+                input: '$todos',
+                cond: {
+                  $and: [
+                    { $lt: ['$this.dueDate', new Date()] },
+                    { $ne: ['$this.status', 'completed'] }
+                  ]
+                }
+              }
+            }
+          },
+          assignedTodos: {
+            $size: {
+              $filter: {
+                input: '$todos',
+                cond: { $ne: ['$this.assignedBy', null] }
               }
             }
           },
@@ -483,16 +696,45 @@ exports.getReports = async (req, res) => {
             $size: {
               $filter: {
                 input: '$todos',
-                cond: { $gte: ['$$this.createdAt', sevenDaysAgo] }
+                cond: { $gte: ['$this.createdAt', sevenDaysAgo] }
               }
             }
+          },
+          completionRate: {
+            $round: [
+              {
+                $multiply: [
+                  {
+                    $cond: [
+                      { $gt: [{ $size: '$todos' }, 0] },
+                      {
+                        $divide: [
+                          {
+                            $size: {
+                              $filter: {
+                                input: '$todos',
+                                cond: { $eq: ['$this.status', 'completed'] }
+                              }
+                            }
+                          },
+                          { $size: '$todos' }
+                        ]
+                      },
+                      0
+                    ]
+                  },
+                  100
+                ]
+              },
+              2
+            ]
           }
         }
       },
       { $sort: { totalTodos: -1 } }
     ]);
 
-    // Productivity trends
+    // Productivity trends with weekly comparison
     const productivityTrends = await Todo.aggregate([
       {
         $match: {
@@ -567,8 +809,69 @@ exports.getReports = async (req, res) => {
             avgTodos: { $avg: '$todoCount' }
           }
         }
+      ]),
+      avgTasksLast7Days: await Todo.aggregate([
+        {
+          $match: {
+            createdAt: { $gte: sevenDaysAgo }
+          }
+        },
+        {
+          $group: {
+            _id: '$userId',
+            taskCount: { $sum: 1 }
+          }
+        },
+        {
+          $group: {
+            _id: null,
+            avgTasks: { $avg: '$taskCount' },
+            totalUsers: { $sum: 1 }
+          }
+        }
       ])
     };
+
+    // Assignment analytics
+    const assignmentAnalytics = await Todo.aggregate([
+      {
+        $match: {
+          assignedBy: { $ne: null }
+        }
+      },
+      {
+        $group: {
+          _id: '$assignedBy',
+          totalAssigned: { $sum: 1 },
+          completedAssignments: {
+            $sum: { $cond: [{ $eq: ['$status', 'completed'] }, 1, 0] }
+          }
+        }
+      },
+      {
+        $lookup: {
+          from: 'users',
+          localField: '_id',
+          foreignField: '_id',
+          as: 'admin'
+        }
+      },
+      { $unwind: '$admin' },
+      {
+        $project: {
+          adminName: '$admin.username',
+          totalAssigned: 1,
+          completedAssignments: 1,
+          assignmentCompletionRate: {
+            $round: [
+              { $multiply: [{ $divide: ['$completedAssignments', '$totalAssigned'] }, 100] },
+              2
+            ]
+          }
+        }
+      },
+      { $sort: { totalAssigned: -1 } }
+    ]);
 
     res.json({
       success: true,
@@ -578,8 +881,10 @@ exports.getReports = async (req, res) => {
         performanceMetrics: {
           ...performanceMetrics,
           completionRate: performanceMetrics.completionRate[0]?.rate || 0,
-          avgTodosPerUser: Math.round(performanceMetrics.avgTodosPerUser[0]?.avgTodos || 0)
+          avgTodosPerUser: Math.round(performanceMetrics.avgTodosPerUser[0]?.avgTodos || 0),
+          avgTasksLast7Days: Math.round((performanceMetrics.avgTasksLast7Days[0]?.avgTasks || 0) * 100) / 100
         },
+        assignmentAnalytics,
         generatedAt: new Date()
       }
     });
@@ -592,3 +897,25 @@ exports.getReports = async (req, res) => {
     });
   }
 };
+
+// Admin: Get users for assignment dropdown
+exports.getUsersForAssignment = async (req, res) => {
+  try {
+    const users = await User.find({ isActive: true, role: 'user' })
+      .select('_id username email profileImage')
+      .sort({ username: 1 });
+
+    res.json({
+      success: true,
+      data: { users }
+    });
+  } catch (error) {
+    console.error('Get users for assignment error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to fetch users',
+      error: error.message
+    });
+  }
+};
+          
