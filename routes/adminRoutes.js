@@ -5,7 +5,8 @@ const {
   getUserDetails,
   updateUser,
   getAllTodos,
-  getReports
+  getReports,
+  addUser
 } = require('../controllers/adminController');
 const { authenticateToken, requireAdmin } = require('../middleware/authMiddleware');
 const { UploadStream } = require('cloudinary');
