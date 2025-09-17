@@ -8,6 +8,8 @@ const {
   getReports
 } = require('../controllers/adminController');
 const { authenticateToken, requireAdmin } = require('../middleware/authMiddleware');
+const { UploadStream } = require('cloudinary');
+const { upload } = require('../config/cloudinary');
 
 const router = express.Router();
 
@@ -21,6 +23,7 @@ router.get('/reports', getReports);
 
 // User management
 router.get('/users', getUsers);
+router.post('/users', upload.single('image'), addUser);
 router.get('/users/:userId', getUserDetails);
 router.put('/users/:userId', updateUser);
 

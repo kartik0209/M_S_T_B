@@ -339,6 +339,45 @@ exports.getUsers = async (req, res) => {
   }
 };
 
+
+exports.addUser = async (req, res) => {
+try {
+    const { username, email, password, role } = req.body;
+    let profileImage = null;
+
+    if (req.file) {
+      profileImage = {
+        url: req.file.path,
+        public_id: req.file.filename
+      };
+    }
+
+    const newUser = new User({
+      username,
+      email,
+      password,
+      role,
+      profileImage
+    });
+
+    await newUser.save();
+
+    res.status(201).json({
+      success: true,
+      message: 'User added successfully',
+      data: newUser
+    });
+  } catch (error) {
+    console.error('Admin add user error:', error);
+    res.status(500).json({
+      success: false,
+      message: 'Failed to add user',
+      error: error.message
+    });
+  }
+};
+
+
 // Get user details with todos
 exports.getUserDetails = async (req, res) => {
   try {
