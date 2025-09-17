@@ -346,10 +346,8 @@ try {
     let profileImage = null;
 
     if (req.file) {
-      profileImage = {
-        url: req.file.path,
-        public_id: req.file.filename
-      };
+      profileImage = req.file.path
+       
     }
 
     const newUser = new User({
